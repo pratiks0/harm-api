@@ -12,7 +12,7 @@ except Exception as e:
     print("Error loading model or vectorizer:", e)
     raise
 
-# Define class labels in the same order as used during training
+# Define class labels (order must match training)
 class_labels = ["totally fine", "toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
 
 def preprocess_text(text):
@@ -22,40 +22,47 @@ def preprocess_text(text):
     """
     # Transform the text. This returns a sparse matrix.
     vector = vectorizer.transform([text])
-    # If your classifier expects a dense array, you can convert it:
-    # vector = vector.toarray()
     return vector
 
-# Initialize Flask app and enable CORS (so external clients can access your API)
+# Initialize Flask app
 app = Flask(__name__)
-CORS(app)
+
+# Enable CORS for all routes and origins explicitly
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 @app.route('/classify', methods=['POST'])
 def classify_text():
     try:
-        # Parse JSON request
+        # Log the incoming request
+        print("Received /classify request.")
         data = request.get_json(force=True)
         text = data.get("text", "")
         if not text:
+            print("No text provided in the request.")
             return jsonify({"error": "No text provided"}), 400
 
-        # Preprocess the text to get the correct feature vector shape (1, 10000)
+        # Preprocess the text to get the correct feature vector
         processed = preprocess_text(text)
+        print("Processed text into feature vector of shape:", processed.shape)
+        
         # Get predictions from the classifier
         preds = clf.predict(processed)
+        print("Raw prediction output:", preds)
         
-        # If preds is a 2D array, take the argmax along axis 1; otherwise use argmax on 1D array.
+        # Determine the predicted class index
         if preds.ndim > 1:
             class_idx = np.argmax(preds, axis=1)[0]
         else:
             class_idx = np.argmax(preds)
-        
         predicted_label = class_labels[class_idx]
+        print("Predicted label:", predicted_label)
+        
+        # Return the prediction as JSON with CORS headers
         return jsonify({"label": predicted_label})
     except Exception as e:
         print("Error during classification:", e)
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    # Run the Flask app in debug mode for local testing
+    # Run the Flask app with debug mode enabled for local testing
     app.run(host='0.0.0.0', port=5000, debug=True)
