@@ -7,9 +7,6 @@ from PIL import Image
 import io
 import tensorflow as tf
 
-#########################
-# Load the Text Classifier
-#########################
 try:
     text_clf = joblib.load("text_classification_model.pkl")
     vectorizer = joblib.load("tfidf_vectorizer.pkl")
@@ -18,8 +15,6 @@ except Exception as e:
     print("Error loading text classifier or vectorizer:", e)
     raise
 
-# Define text classifier labels (multi-label; do NOT include "totally fine")
-# We'll interpret all zeros as "totally fine".
 text_class_labels = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
 
 def preprocess_text(text):
@@ -30,11 +25,8 @@ def preprocess_text(text):
     vector = vectorizer.transform([text])
     return vector
 
-#########################
-# Load the Image Classifier
-#########################
+
 try:
-    # Rebuild architecture
     base_model = tf.keras.applications.MobileNetV2(weights='imagenet', include_top=False, input_shape=(224,224,3))
     base_model.trainable = False
 
@@ -57,7 +49,6 @@ def preprocess_image(image_data):
     Converts it to a 224x224 numpy array normalized to [0,1].
     """
     try:
-        # Remove data URI header if present
         if image_data.startswith("data:image"):
             header, encoded = image_data.split(",", 1)
         else:
@@ -66,15 +57,13 @@ def preprocess_image(image_data):
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         img = img.resize((224, 224))
         img_array = np.array(img).astype(np.float32) / 255.0
-        img_array = np.expand_dims(img_array, axis=0)  # shape: (1, 224, 224, 3)
+        img_array = np.expand_dims(img_array, axis=0) 
         return img_array
     except Exception as e:
         print("Error during image preprocessing:", e)
         raise
 
-#########################
-# Create Flask App
-#########################
+
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
@@ -82,7 +71,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 def classify():
     try:
         data = request.get_json(force=True)
-        input_type = data.get("type", "text")  # default to text classification
+        input_type = data.get("type", "text")  
         
         if input_type == "text":
             text = data.get("text", "")
@@ -94,7 +83,7 @@ def classify():
             print("Raw text prediction output:", preds)
             
             # For multi-label, iterate over each label prediction
-            pred_array = preds[0]  # e.g., [0, 1, 0, 1, 0, 0]
+            pred_array = preds[0] 
             predicted_labels = []
             for i, val in enumerate(pred_array):
                 if val == 1:
