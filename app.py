@@ -2,71 +2,121 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import joblib
 import numpy as np
+import base64
+from PIL import Image
+import io
+import tensorflow as tf
 
-# Load the trained classifier and TF-IDF vectorizer
+#########################
+# Load the Text Classifier
+#########################
 try:
-    # Example: a multi-label classifier
-    clf = joblib.load("text_classification_model.pkl")
+    text_clf = joblib.load("text_classification_model.pkl")
     vectorizer = joblib.load("tfidf_vectorizer.pkl")
-    print("Model and vectorizer loaded successfully!")
+    print("Text classifier and vectorizer loaded successfully!")
 except Exception as e:
-    print("Error loading model or vectorizer:", e)
+    print("Error loading text classifier or vectorizer:", e)
     raise
 
-# Define class labels (DO NOT include "totally fine" here)
-# We'll detect "totally fine" if all predictions are 0
-class_labels = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
+# Define text classifier labels (multi-label; do NOT include "totally fine")
+# We'll interpret all zeros as "totally fine".
+text_class_labels = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
 
 def preprocess_text(text):
     """
     Preprocess the input text using the loaded TF-IDF vectorizer.
-    This converts the raw text into the same feature vector used during training.
+    This returns the same 10,000-dimension feature vector used during training.
     """
-    # Transform the text. This returns a sparse matrix
     vector = vectorizer.transform([text])
     return vector
 
+#########################
+# Load the Image Classifier
+#########################
+try:
+    # Rebuild architecture
+    base_model = tf.keras.applications.MobileNetV2(weights='imagenet', include_top=False, input_shape=(224,224,3))
+    base_model.trainable = False
+
+    x = tf.keras.layers.GlobalAveragePooling2D()(base_model.output)
+    x = tf.keras.layers.Dropout(0.5)(x)
+    x = tf.keras.layers.Dense(128, activation='relu')(x)
+    output = tf.keras.layers.Dense(1, activation='sigmoid')(x)
+
+    image_model = tf.keras.models.Model(inputs=base_model.input, outputs=output)
+    image_model.load_weights('final_model.weights.h5')
+    print("Image classifier model loaded successfully!")
+except Exception as e:
+    print("Error loading image classifier:", e)
+    raise
+
+def preprocess_image(image_data):
+    """
+    Preprocess the image input.
+    Expects image_data as a base64-encoded string (with or without a data URI header).
+    Converts it to a 224x224 numpy array normalized to [0,1].
+    """
+    try:
+        # Remove data URI header if present
+        if image_data.startswith("data:image"):
+            header, encoded = image_data.split(",", 1)
+        else:
+            encoded = image_data
+        img_bytes = base64.b64decode(encoded)
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        img = img.resize((224, 224))
+        img_array = np.array(img).astype(np.float32) / 255.0
+        img_array = np.expand_dims(img_array, axis=0)  # shape: (1, 224, 224, 3)
+        return img_array
+    except Exception as e:
+        print("Error during image preprocessing:", e)
+        raise
+
+#########################
+# Create Flask App
+#########################
 app = Flask(__name__)
-# Enable CORS for all routes/origins
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 @app.route('/classify', methods=['POST'])
-def classify_text():
+def classify():
     try:
-        print("Received /classify request.")
         data = request.get_json(force=True)
-        text = data.get("text", "")
-        if not text:
-            print("No text provided in the request.")
-            return jsonify({"error": "No text provided"}), 400
-
-        # Convert raw text to TF-IDF features
-        processed = preprocess_text(text)
-        print("Processed text into feature vector of shape:", processed.shape)
+        input_type = data.get("type", "text")  # default to text classification
         
-        # Predict with the multi-label classifier
-        # For multi-label, clf.predict(...) typically returns something like [[0 1 0 1 0 ...]]
-        preds = clf.predict(processed)
-        print("Raw prediction output:", preds)
-
-        # preds is an array of shape (1, N) if you have N classes
-        # e.g. preds might be [[1 0 1 0 0]]
-        pred_array = preds[0]
-
-        # Convert 0/1 array into a list of labels
-        predicted_labels = []
-        for i, val in enumerate(pred_array):
-            if val == 1:
-                predicted_labels.append(class_labels[i])
-
-        # If none are 1, interpret as "totally fine"
-        if not predicted_labels:
-            predicted_labels = ["totally fine"]
-
-        predicted_label_str = ", ".join(predicted_labels)
-        print("Predicted label(s):", predicted_label_str)
-
-        return jsonify({"label": predicted_label_str})
+        if input_type == "text":
+            text = data.get("text", "")
+            if not text:
+                return jsonify({"error": "No text provided"}), 400
+            
+            processed = preprocess_text(text)
+            preds = text_clf.predict(processed)
+            print("Raw text prediction output:", preds)
+            
+            # For multi-label, iterate over each label prediction
+            pred_array = preds[0]  # e.g., [0, 1, 0, 1, 0, 0]
+            predicted_labels = []
+            for i, val in enumerate(pred_array):
+                if val == 1:
+                    predicted_labels.append(text_class_labels[i])
+            if not predicted_labels:
+                predicted_labels = ["totally fine"]
+            return jsonify({"label": ", ".join(predicted_labels)})
+        
+        elif input_type == "image":
+            image_data = data.get("image", "")
+            if not image_data:
+                return jsonify({"error": "No image provided"}), 400
+            
+            processed_image = preprocess_image(image_data)
+            pred = image_model.predict(processed_image)
+            print("Raw image prediction output:", pred)
+            # For binary classification: output >= 0.5 means "sensitive/harmful"
+            predicted_label = "sensitive/harmful" if pred[0][0] >= 0.5 else "not sensitive/harmful"
+            return jsonify({"label": predicted_label})
+        
+        else:
+            return jsonify({"error": "Invalid input type. Use 'text' or 'image'."}), 400
     except Exception as e:
         print("Error during classification:", e)
         return jsonify({"error": str(e)}), 500
